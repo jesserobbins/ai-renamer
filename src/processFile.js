@@ -13,6 +13,50 @@ const deleteDirectory = require('./deleteDirectory')
 const isProcessableFile = require('./isProcessableFile')
 const getMacOSTags = require('./getMacOSTags')
 
+const ansi = {
+  reset: '\x1b[0m',
+  bold: '\x1b[1m',
+  dim: '\x1b[2m',
+  cyan: '\x1b[36m',
+  green: '\x1b[32m',
+  red: '\x1b[31m'
+}
+
+const formatRenamePreview = ({ original, updated }) => {
+  const originalDir = path.dirname(original)
+  const updatedDir = path.dirname(updated)
+  const originalName = path.basename(original)
+  const updatedName = path.basename(updated)
+
+  const renderDir = dir => {
+    if (!dir || dir === '.') return ''
+    return dir + path.sep
+  }
+
+  const originalDirDisplay = renderDir(originalDir)
+  const updatedDirDisplay = renderDir(updatedDir)
+  const dirMatches = originalDirDisplay === updatedDirDisplay
+
+  const renderSide = (dirDisplay, name, color) => {
+    const sharedDir = dirDisplay
+      ? `${ansi.dim}${dirDisplay}${ansi.reset}`
+      : ''
+    return `${sharedDir}${color}${name}${ansi.reset}`
+  }
+
+  const fromDisplay = renderSide(originalDirDisplay, originalName, ansi.red)
+  const toDisplay = dirMatches
+    ? `${ansi.dim}${originalDirDisplay}${ansi.reset}${ansi.green}${updatedName}${ansi.reset}`
+    : renderSide(updatedDirDisplay, updatedName, ansi.green)
+
+  return `${fromDisplay} ${ansi.dim}→${ansi.reset} ${toDisplay}`
+}
+
+const quoteForShell = value => {
+  const escaped = value.replace(/(["\\`$])/g, '\\$1')
+  return `"${escaped}"`
+}
+
 const logVerbose = (verbose, message) => {
   if (!verbose) return
   console.log(message)
@@ -178,8 +222,14 @@ module.exports = async options => {
     }
 
     const proposedRelativeNewPath = path.join(path.dirname(relativeFilePath), `${proposedName}${ext}`)
+    const renamePreview = formatRenamePreview({
+      original: relativeFilePath,
+      updated: proposedRelativeNewPath
+    })
+    const confirmationPrompt = `${ansi.cyan}?${ansi.reset} ${ansi.bold}Rename${ansi.reset} ${renamePreview}? (y/N): `
+
     const confirmed = await promptForConfirmation({
-      question: `Rename "${relativeFilePath}" to "${proposedRelativeNewPath}"? (y/N): `,
+      question: confirmationPrompt,
       forceChange,
       nonInteractiveMessage: `🟡 Skipping rename for ${relativeFilePath} because confirmations are required but no interactive terminal is available. Use --force-change to bypass prompts.`
     })
@@ -191,13 +241,20 @@ module.exports = async options => {
 
     const newFileName = await saveFile({ ext, newName: proposedName, filePath })
     const relativeNewFilePath = path.join(path.dirname(relativeFilePath), newFileName)
-    console.log(`🟢 Renamed: ${relativeFilePath} to ${relativeNewFilePath}`)
+    const renameResultPreview = formatRenamePreview({
+      original: relativeFilePath,
+      updated: relativeNewFilePath
+    })
+    console.log(`🟢 Renamed: ${renameResultPreview}`)
 
     if (typeof recordLogEntry === 'function') {
       const newAbsolutePath = path.resolve(path.dirname(filePath), newFileName)
+      const originalAbsolutePath = path.resolve(filePath)
       const confirmationSource = forceChange ? 'force-change flag' : 'user confirmed'
+      const revertCommand = `mv ${quoteForShell(newAbsolutePath)} ${quoteForShell(originalAbsolutePath)}`
+      const revertCommandRelative = `mv ${quoteForShell(relativeNewFilePath)} ${quoteForShell(relativeFilePath)}`
       const logEntry = {
-        originalPath: path.resolve(filePath),
+        originalPath: originalAbsolutePath,
         newPath: newAbsolutePath,
         originalName: path.basename(filePath),
         newName: newFileName,
@@ -207,7 +264,9 @@ module.exports = async options => {
         confirmation: confirmationSource,
         context: nameContext,
         fileMetadata,
-        finderTags
+        finderTags,
+        revertCommand,
+        revertCommandRelative
       }
       recordLogEntry(logEntry)
     }

@@ -214,6 +214,13 @@ module.exports = async ({
     if (logEnabled) {
       try {
         await fs.mkdir(path.dirname(resolvedLogPath), { recursive: true })
+        const recoveryCommands = logEntries
+          .filter(entry => entry && entry.revertCommand)
+          .map(entry => entry.revertCommand)
+        const recoveryCommandsRelative = logEntries
+          .filter(entry => entry && entry.revertCommandRelative)
+          .map(entry => entry.revertCommandRelative)
+
         const logPayload = {
           generatedAt: new Date().toISOString(),
           command: process.argv,
@@ -239,7 +246,19 @@ module.exports = async ({
             peopleFocus,
             projectFocus
           },
-          renames: logEntries
+          renames: logEntries,
+          recovery: {
+            commands: recoveryCommands,
+            relativeCommands: recoveryCommandsRelative
+          }
+        }
+
+        if (recoveryCommands.length > 0) {
+          logPayload.recovery.script = [
+            '#!/bin/sh',
+            'set -e',
+            ...recoveryCommands
+          ].join('\n')
         }
 
         await fs.writeFile(resolvedLogPath, JSON.stringify(logPayload, null, 2))
