@@ -165,6 +165,37 @@ const buildMetadataHint = ({ fileMetadata, metadataHints }) => {
   return { lines, fallbackDate }
 }
 
+const appendFallbackDate = ({ base, fallbackDate, limit }) => {
+  if (!base) {
+    return { text: base, applied: false }
+  }
+
+  if (!fallbackDate || !fallbackDate.value) {
+    return { text: base, applied: false }
+  }
+
+  const hasYear = /(19|20)\d{2}/.test(base)
+  if (hasYear) {
+    return { text: base, applied: false }
+  }
+
+  const trimmedBase = base.trim()
+  const dateFragment = fallbackDate.value
+  const separator = trimmedBase ? ' ' : ''
+  const appended = `${trimmedBase}${separator}${dateFragment}`
+
+  if (!limit || appended.length <= limit) {
+    return { text: appended, applied: true }
+  }
+
+  const maxBaseLength = Math.max(limit - dateFragment.length - separator.length, 0)
+  const shortenedBase = maxBaseLength > 0 ? shortenToLimit(trimmedBase, maxBaseLength) : ''
+  const safeSeparator = shortenedBase ? ' ' : ''
+  const combined = `${shortenedBase}${safeSeparator}${dateFragment}`
+
+  return { text: combined, applied: true }
+}
+
 const composePromptLines = ({
   _case,
   chars,
@@ -300,9 +331,21 @@ module.exports = async options => {
     const modelResult = await getModelResponse({ ...options, prompt })
 
     const safeCharLimit = Number.isFinite(chars) && chars > 0 ? Math.floor(chars) : 20
-    const candidateLimit = Math.min(safeCharLimit + 20, 120)
+    const candidateLimit = (() => {
+      if (!Number.isFinite(safeCharLimit) || safeCharLimit <= 0) return 120
+      const allowance = Math.max(20, Math.floor(safeCharLimit * 0.25))
+      return safeCharLimit + allowance
+    })()
     const extractedCandidate = extractFilenameCandidate({ modelResult, maxChars: candidateLimit })
-    const candidate = extractedCandidate || 'renamed file'
+    let candidate = extractedCandidate || 'renamed file'
+
+    const metadataFallbackApplication = appendFallbackDate({
+      base: candidate,
+      fallbackDate: metadataInfo.fallbackDate,
+      limit: candidateLimit
+    })
+    candidate = metadataFallbackApplication.text
+    const metadataFallbackApplied = metadataFallbackApplication.applied
 
     let filename = await changeCase({ text: candidate, _case })
     const afterCase = filename
@@ -364,6 +407,9 @@ module.exports = async options => {
         if (metadataInfo.fallbackDate) {
           parts.push(`Highlighted the ${metadataInfo.fallbackDate.type} date as a fallback reference.`)
         }
+        if (metadataFallbackApplied) {
+          parts.push(`Appended the ${metadataInfo.fallbackDate.type} date (${metadataInfo.fallbackDate.value}) because the suggested name lacked a clear timestamp.`)
+        }
         if (parts.length > 0) {
           summaryParts.push(parts.join(' '))
         }
@@ -407,6 +453,10 @@ module.exports = async options => {
       filenameHintIncluded: Boolean(useFilenameHint && originalFileName),
       metadataHintIncluded: Boolean(metadataHints && fileMetadata),
       metadataFallback: metadataInfo.fallbackDate,
+      metadataFallbackApplied,
+      metadataFallbackValue: metadataFallbackApplied && metadataInfo.fallbackDate
+        ? metadataInfo.fallbackDate.value
+        : null,
       originalFileName,
       metadataSummary: metadataInfo.lines
     }
