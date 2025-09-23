@@ -23,7 +23,11 @@ module.exports = async ({
   defaultLogPath,
   defaultLog,
   defaultUseFilenameHint,
-  defaultMetadataHints
+  defaultMetadataHints,
+  defaultAppendTags,
+  defaultCompanyFocus,
+  defaultPeopleFocus,
+  defaultProjectFocus
 }) => {
   try {
     const provider = defaultProvider || 'ollama'
@@ -97,6 +101,38 @@ module.exports = async ({
     const metadataHints = interpretBoolean(defaultMetadataHints, true)
     console.log(`⚪ Use metadata hints: ${metadataHints}`)
 
+    const appendTags = interpretBoolean(defaultAppendTags, false)
+    console.log(`⚪ Append Finder tags: ${appendTags}`)
+
+    const companyFocus = interpretBoolean(defaultCompanyFocus, false)
+    const peopleFocus = interpretBoolean(defaultPeopleFocus, false)
+    const projectFocus = interpretBoolean(defaultProjectFocus, false)
+
+    const focusFlags = []
+    if (companyFocus) focusFlags.push('company')
+    if (peopleFocus) focusFlags.push('people')
+    if (projectFocus) focusFlags.push('project')
+
+    const focusPriority = ['project', 'company', 'people']
+    let promptFocus = 'balanced'
+    if (focusFlags.length === 1) {
+      promptFocus = focusFlags[0]
+    } else if (focusFlags.length > 1) {
+      for (const candidate of focusPriority) {
+        if (focusFlags.includes(candidate)) {
+          promptFocus = candidate
+          break
+        }
+      }
+      console.log(`⚪ Multiple prompt focus flags detected (${focusFlags.join(', ')}). Using ${promptFocus} focus.`)
+    }
+
+    if (focusFlags.length === 0) {
+      console.log('⚪ Prompt focus: balanced')
+    } else {
+      console.log(`⚪ Prompt focus: ${promptFocus}`)
+    }
+
     const deriveCommandLabel = () => {
       const argvSegments = process.argv.slice(1)
       for (let i = argvSegments.length - 1; i >= 0; i--) {
@@ -154,7 +190,12 @@ module.exports = async ({
       logEnabled,
       resolvedLogPath,
       useFilenameHint,
-      metadataHints
+      metadataHints,
+      appendTags,
+      promptFocus,
+      companyFocus,
+      peopleFocus,
+      projectFocus
     }
 
     const logEntries = []
@@ -191,7 +232,12 @@ module.exports = async ({
             verbose,
             forceChange,
             useFilenameHint,
-            metadataHints
+            metadataHints,
+            appendTags,
+            promptFocus,
+            companyFocus,
+            peopleFocus,
+            projectFocus
           },
           renames: logEntries
         }

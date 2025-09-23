@@ -11,6 +11,7 @@ const extractFrames = require('./extractFrames')
 const readFileContent = require('./readFileContent')
 const deleteDirectory = require('./deleteDirectory')
 const isProcessableFile = require('./isProcessableFile')
+const getMacOSTags = require('./getMacOSTags')
 
 const logVerbose = (verbose, message) => {
   if (!verbose) return
@@ -57,7 +58,8 @@ module.exports = async options => {
       forceChange,
       recordLogEntry,
       metadataHints,
-      useFilenameHint
+      useFilenameHint,
+      appendTags
     } = options
 
     verboseFlag = verbose
@@ -67,6 +69,7 @@ module.exports = async options => {
     relativeFilePath = path.relative(inputPath, filePath) || fileName
 
     let fileMetadata = null
+    let finderTags = []
     try {
       const stats = await fs.stat(filePath)
       const createdAt = stats.birthtime instanceof Date && !Number.isNaN(stats.birthtime.getTime())
@@ -99,6 +102,22 @@ module.exports = async options => {
       logVerbose(verbose, `🗂️ Metadata — size: ${prettySize || stats.size || 'unknown'}, created: ${createdAt || 'n/a'}, modified: ${modifiedAt || 'n/a'}`)
     } catch (metadataError) {
       logVerbose(verbose, `⚪ Unable to read metadata for ${relativeFilePath}: ${metadataError.message}`)
+    }
+
+    if (appendTags || metadataHints) {
+      const tags = await getMacOSTags({
+        filePath,
+        verboseLogger: message => logVerbose(verbose, message)
+      })
+
+      if (tags.length > 0) {
+        finderTags = tags
+        if (fileMetadata) {
+          fileMetadata = { ...fileMetadata, tags }
+        } else {
+          fileMetadata = { tags }
+        }
+      }
     }
 
     logVerbose(verbose, `🔍 Processing file: ${relativeFilePath}`)
@@ -146,7 +165,9 @@ module.exports = async options => {
       originalFileName: fileName,
       fileMetadata,
       metadataHints,
-      useFilenameHint
+      useFilenameHint,
+      appendTags,
+      macTags: finderTags
     })
     if (!newNameResult || !newNameResult.filename) return
 
@@ -185,7 +206,8 @@ module.exports = async options => {
         acceptedAt: new Date().toISOString(),
         confirmation: confirmationSource,
         context: nameContext,
-        fileMetadata
+        fileMetadata,
+        finderTags
       }
       recordLogEntry(logEntry)
     }

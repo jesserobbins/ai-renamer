@@ -31,7 +31,11 @@ const loadConfig = async () => {
       defaultLog: normalizeBoolean(parsed.defaultLog),
       defaultIncludeSubdirectories: normalizeBoolean(parsed.defaultIncludeSubdirectories, false),
       defaultUseFilenameHint: normalizeBoolean(parsed.defaultUseFilenameHint, true),
-      defaultMetadataHints: normalizeBoolean(parsed.defaultMetadataHints, true)
+      defaultMetadataHints: normalizeBoolean(parsed.defaultMetadataHints, true),
+      defaultAppendTags: normalizeBoolean(parsed.defaultAppendTags, false),
+      defaultCompanyFocus: normalizeBoolean(parsed.defaultCompanyFocus, false),
+      defaultPeopleFocus: normalizeBoolean(parsed.defaultPeopleFocus, false),
+      defaultProjectFocus: normalizeBoolean(parsed.defaultProjectFocus, false)
     }
   } catch (err) {
     return {}
@@ -139,6 +143,26 @@ module.exports = async () => {
       type: 'boolean',
       description: 'Provide file metadata (dates, size) to the model when available',
       default: config.defaultMetadataHints !== undefined ? config.defaultMetadataHints : true
+    })
+    .option('append-tags', {
+      type: 'boolean',
+      description: 'Append macOS Finder tags to the generated filename before the date segment',
+      default: config.defaultAppendTags || false
+    })
+    .option('company-focus', {
+      type: 'boolean',
+      description: 'Bias the prompt to identify the company or organization first when building filenames',
+      default: config.defaultCompanyFocus || false
+    })
+    .option('people-focus', {
+      type: 'boolean',
+      description: 'Bias the prompt to identify people, teams, or committees first when building filenames',
+      default: config.defaultPeopleFocus || false
+    })
+    .option('project-focus', {
+      type: 'boolean',
+      description: 'Bias the prompt to identify projects or initiatives first when building filenames',
+      default: config.defaultProjectFocus || false
     }).argv
 
   if (argv.help) {
@@ -258,6 +282,42 @@ module.exports = async () => {
 
   if (metadataHintsProvided) {
     config.defaultMetadataHints = argv['metadata-hints']
+    await saveConfig({ config })
+  }
+
+  const appendTagsProvided = process.argv.some((arg) => {
+    return arg === '--append-tags' || arg === '--no-append-tags' || arg.startsWith('--append-tags=') || arg.startsWith('--no-append-tags=')
+  })
+
+  if (appendTagsProvided) {
+    config.defaultAppendTags = argv['append-tags']
+    await saveConfig({ config })
+  }
+
+  const companyFocusProvided = process.argv.some((arg) => {
+    return arg === '--company-focus' || arg === '--no-company-focus' || arg.startsWith('--company-focus=') || arg.startsWith('--no-company-focus=')
+  })
+
+  if (companyFocusProvided) {
+    config.defaultCompanyFocus = argv['company-focus']
+    await saveConfig({ config })
+  }
+
+  const peopleFocusProvided = process.argv.some((arg) => {
+    return arg === '--people-focus' || arg === '--no-people-focus' || arg.startsWith('--people-focus=') || arg.startsWith('--no-people-focus=')
+  })
+
+  if (peopleFocusProvided) {
+    config.defaultPeopleFocus = argv['people-focus']
+    await saveConfig({ config })
+  }
+
+  const projectFocusProvided = process.argv.some((arg) => {
+    return arg === '--project-focus' || arg === '--no-project-focus' || arg.startsWith('--project-focus=') || arg.startsWith('--no-project-focus=')
+  })
+
+  if (projectFocusProvided) {
+    config.defaultProjectFocus = argv['project-focus']
     await saveConfig({ config })
   }
 

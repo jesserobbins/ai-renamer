@@ -155,6 +155,10 @@ const buildMetadataHint = ({ fileMetadata, metadataHints }) => {
     lines.push(`File size ${fileMetadata.size} bytes`)
   }
 
+  if (Array.isArray(fileMetadata.tags) && fileMetadata.tags.length > 0) {
+    lines.push(`Finder tags: ${fileMetadata.tags.join(', ')}`)
+  }
+
   let fallbackDate = null
   if (created) {
     fallbackDate = { type: 'created', value: created }
@@ -196,6 +200,60 @@ const appendFallbackDate = ({ base, fallbackDate, limit }) => {
   return { text: combined, applied: true }
 }
 
+const appendFinderTags = ({ base, tags }) => {
+  if (!Array.isArray(tags) || tags.length === 0) {
+    return { text: base, applied: [] }
+  }
+
+  const sanitized = []
+  const seen = new Set()
+
+  for (const tag of tags) {
+    const cleaned = sanitizeSegment(tag)
+    if (!cleaned) continue
+    const key = cleaned.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    sanitized.push(cleaned)
+  }
+
+  if (sanitized.length === 0) {
+    return { text: base, applied: [] }
+  }
+
+  const trimmedBase = typeof base === 'string' ? base.trim() : ''
+  const tagsSegment = sanitized.join(' - ')
+  const combined = trimmedBase ? `${trimmedBase} - ${tagsSegment}` : tagsSegment
+
+  return { text: combined, applied: sanitized }
+}
+
+const getFocusGuidance = (focus) => {
+  switch (focus) {
+    case 'company':
+      return 'Lead with the company or organization responsible for the document before other elements.'
+    case 'people':
+      return 'Lead with the key people, teams, or committees mentioned before any other elements.'
+    case 'project':
+      return 'Lead with the project, initiative, or deliverable name before the other elements.'
+    default:
+      return 'Lead with the most relevant entity (company, project, team, or person) that anchors the document.'
+  }
+}
+
+const describeFocusForSummary = (focus) => {
+  switch (focus) {
+    case 'company':
+      return 'company-first prompt focus'
+    case 'people':
+      return 'people-first prompt focus'
+    case 'project':
+      return 'project-first prompt focus'
+    default:
+      return null
+  }
+}
+
 const composePromptLines = ({
   _case,
   chars,
@@ -208,21 +266,23 @@ const composePromptLines = ({
   contentSnippet,
   contentOriginalLength,
   contentTruncated,
-  customPrompt
+  customPrompt,
+  promptFocus
 }) => {
   const lines = [
-    'Generate filename:',
+    'You rename documents using descriptive structured filenames.',
+    'Follow this order: [Primary subject] - [Purpose or title] - [Document type] - [Version identifier] - [Best available date in YYYY-MM-DD].',
+    getFocusGuidance(promptFocus),
+    'Use real wording from the document or metadata and omit any segment that is not clearly supported.',
+    'Include authentic revision numbers or version labels (e.g., v1, draft, executed) when they appear.',
+    'Prefer ISO-style dates (YYYY-MM-DD). If only month or year is known, use the most precise available format.',
+    'Do not invent information, do not include the file extension, and avoid extra punctuation beyond hyphens or spaces.',
     '',
-    `Use ${_case}`,
-    `Max ${chars} characters`,
-    `${language} only`,
-    'No file extension',
-    'No special chars',
-    'Only key elements',
-    'One word if possible',
-    'Noun-verb format',
-    '',
-    'Respond ONLY with filename.'
+    `Case style: ${_case}`,
+    `Maximum characters: ${chars}`,
+    `Language: ${language}`,
+    'Return only the filename text.',
+    ''
   ]
 
   if (useFilenameHint && originalFileName) {
@@ -268,7 +328,10 @@ module.exports = async options => {
     originalFileName,
     fileMetadata,
     metadataHints = true,
-    useFilenameHint = true
+    useFilenameHint = true,
+    appendTags = false,
+    macTags = [],
+    promptFocus = 'balanced'
   } = options
 
   try {
@@ -304,7 +367,8 @@ module.exports = async options => {
       contentSnippet: contentSnippet || null,
       contentOriginalLength: originalContentLength,
       contentTruncated,
-      customPrompt
+      customPrompt,
+      promptFocus
     })
 
     let promptLines = assemblePrompt()
@@ -338,6 +402,13 @@ module.exports = async options => {
     })()
     const extractedCandidate = extractFilenameCandidate({ modelResult, maxChars: candidateLimit })
     let candidate = extractedCandidate || 'renamed file'
+
+    let finderTagsApplied = []
+    if (appendTags && Array.isArray(macTags) && macTags.length > 0) {
+      const tagAppendResult = appendFinderTags({ base: candidate, tags: macTags })
+      candidate = tagAppendResult.text
+      finderTagsApplied = tagAppendResult.applied
+    }
 
     const metadataFallbackApplication = appendFallbackDate({
       base: candidate,
@@ -397,6 +468,19 @@ module.exports = async options => {
     }
     if (useFilenameHint && originalFileName) {
       summaryParts.push(`Provided the original filename "${originalFileName}" as a hint.`)
+    }
+    if (appendTags) {
+      if (finderTagsApplied.length > 0) {
+        summaryParts.push(`Appended Finder tags (${finderTagsApplied.join(', ')}) before the date segment.`)
+      } else if (Array.isArray(macTags) && macTags.length > 0) {
+        summaryParts.push('Finder tags were available but removed after sanitization or length limits.')
+      } else {
+        summaryParts.push('Finder tag appending was enabled but no Finder tags were detected on the file.')
+      }
+    }
+    const focusSummary = describeFocusForSummary(promptFocus)
+    if (focusSummary) {
+      summaryParts.push(`Used ${focusSummary} to guide the naming order.`)
     }
     if (metadataHints) {
       if (fileMetadata) {
@@ -458,7 +542,11 @@ module.exports = async options => {
         ? metadataInfo.fallbackDate.value
         : null,
       originalFileName,
-      metadataSummary: metadataInfo.lines
+      metadataSummary: metadataInfo.lines,
+      appendTagsEnabled: Boolean(appendTags),
+      finderTagsDetected: Array.isArray(macTags) ? [...macTags] : [],
+      finderTagsApplied,
+      promptFocus
     }
 
     return { filename, context }
