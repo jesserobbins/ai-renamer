@@ -26,6 +26,15 @@ module.exports = [
   // other
   '.txt', '.log', '.diff', '.patch', '.proto', '.tex',
 
+  // office documents
+  '.doc', '.docx', '.docm', '.dot', '.dotx', '.dotm', '.rtf', '.odt',
+
+  // office presentations
+  '.ppt', '.pptx', '.pptm', '.pps', '.ppsx', '.ppsm', '.pot', '.potx', '.potm', '.key', '.odp',
+
+  // office spreadsheets
+  '.xls', '.xlsx', '.xlsm', '.xlsb', '.xlt', '.xltx', '.xltm', '.ods',
+
   // image files
   '.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff',
 

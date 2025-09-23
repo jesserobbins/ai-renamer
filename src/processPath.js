@@ -1,4 +1,5 @@
 const fs = require('fs').promises
+const path = require('path')
 
 const processFile = require('./processFile')
 const chooseModel = require('./chooseModel')
@@ -15,7 +16,14 @@ module.exports = async ({
   defaultLanguage,
   defaultProvider,
   defaultCustomPrompt,
-  defaultIncludeSubdirectories
+  defaultIncludeSubdirectories,
+  defaultConvertBinary,
+  defaultVerbose,
+  defaultForceChange,
+  defaultLogPath,
+  defaultLog,
+  defaultUseFilenameHint,
+  defaultMetadataHints
 }) => {
   try {
     const provider = defaultProvider || 'ollama'
@@ -51,12 +59,78 @@ module.exports = async ({
     const language = defaultLanguage || 'English'
     console.log(`⚪ Language: ${language}`)
 
-    const includeSubdirectories = defaultIncludeSubdirectories === 'true' || false
+    const interpretBoolean = (value, fallback = false) => {
+      if (value === undefined) return fallback
+      if (typeof value === 'boolean') return value
+      if (typeof value === 'string') {
+        const lowered = value.toLowerCase()
+        if (lowered === 'true') return true
+        if (lowered === 'false') return false
+      }
+
+      return fallback
+    }
+
+    const includeSubdirectories = interpretBoolean(defaultIncludeSubdirectories, false)
     console.log(`⚪ Include subdirectories: ${includeSubdirectories}`)
 
     const customPrompt = defaultCustomPrompt || null
     if (customPrompt) {
       console.log(`⚪ Custom Prompt: ${customPrompt}`)
+    }
+
+    const convertBinary = interpretBoolean(defaultConvertBinary, false)
+    console.log(`⚪ Convert legacy Office binaries: ${convertBinary}`)
+
+    const verbose = interpretBoolean(defaultVerbose, false)
+    console.log(`⚪ Verbose logging: ${verbose}`)
+
+    const forceChange = interpretBoolean(defaultForceChange, false)
+    console.log(`⚪ Skip confirmation prompts: ${forceChange}`)
+
+    const logEnabled = defaultLog !== undefined ? interpretBoolean(defaultLog, true) : true
+    console.log(`⚪ Write run log: ${logEnabled}`)
+
+    const useFilenameHint = interpretBoolean(defaultUseFilenameHint, true)
+    console.log(`⚪ Use filename hint: ${useFilenameHint}`)
+
+    const metadataHints = interpretBoolean(defaultMetadataHints, true)
+    console.log(`⚪ Use metadata hints: ${metadataHints}`)
+
+    const deriveCommandLabel = () => {
+      const argvSegments = process.argv.slice(1)
+      for (let i = argvSegments.length - 1; i >= 0; i--) {
+        const base = path.basename(argvSegments[i])
+        if (base.toLowerCase().includes('ai-renamer')) {
+          return 'ai-renamer'
+        }
+      }
+
+      const scriptName = process.argv[1] ? path.basename(process.argv[1]) : null
+      if (scriptName === 'index.js') return 'ai-renamer'
+      if (scriptName) return scriptName.replace(/\.js$/i, '')
+
+      const binary = process.argv[0] ? path.basename(process.argv[0]) : 'ai-renamer'
+      return binary || 'ai-renamer'
+    }
+
+    const sanitizeForFilename = (value) => {
+      return value
+        .replace(/[^a-z0-9-_]+/gi, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '') || 'ai-renamer'
+    }
+
+    const commandLabel = sanitizeForFilename(deriveCommandLabel())
+    const timestamp = new Date().toISOString().replace(/[:]/g, '-')
+    const defaultLogFileName = `${commandLabel}-${timestamp}.log`
+
+    const resolvedLogPath = logEnabled
+      ? path.resolve(defaultLogPath || defaultLogFileName)
+      : null
+
+    if (logEnabled) {
+      console.log(`⚪ Log file: ${resolvedLogPath}`)
     }
 
     console.log('--------------------------------------------------')
@@ -73,13 +147,60 @@ module.exports = async ({
       provider,
       inputPath,
       includeSubdirectories,
-      customPrompt
+      customPrompt,
+      convertBinary,
+      verbose,
+      forceChange,
+      logEnabled,
+      resolvedLogPath,
+      useFilenameHint,
+      metadataHints
+    }
+
+    const logEntries = []
+
+    const recordLogEntry = entry => {
+      if (!logEnabled) return
+      logEntries.push(entry)
     }
 
     if (stats.isDirectory()) {
-      await processDirectory({ options, inputPath })
+      await processDirectory({ options: { ...options, recordLogEntry }, inputPath })
     } else if (stats.isFile()) {
-      await processFile({ ...options, filePath: inputPath })
+      await processFile({ ...options, recordLogEntry, filePath: inputPath })
+    }
+
+    if (logEnabled) {
+      try {
+        await fs.mkdir(path.dirname(resolvedLogPath), { recursive: true })
+        const logPayload = {
+          generatedAt: new Date().toISOString(),
+          command: process.argv,
+          inputPath,
+          settings: {
+            provider,
+            baseURL,
+            model,
+            frames,
+            case: _case,
+            chars,
+            language,
+            includeSubdirectories,
+            customPrompt,
+            convertBinary,
+            verbose,
+            forceChange,
+            useFilenameHint,
+            metadataHints
+          },
+          renames: logEntries
+        }
+
+        await fs.writeFile(resolvedLogPath, JSON.stringify(logPayload, null, 2))
+        console.log(`📝 Run log saved to ${resolvedLogPath}`)
+      } catch (err) {
+        console.log(`🔴 Failed to write log: ${err.message}`)
+      }
     }
   } catch (err) {
     console.log(err.message)

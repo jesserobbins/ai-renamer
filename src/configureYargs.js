@@ -6,10 +6,33 @@ const { hideBin } = require('yargs/helpers')
 
 const CONFIG_FILE = path.join(os.homedir(), 'ai-renamer.json')
 
+const normalizeBoolean = (value, fallback = undefined) => {
+  if (value === undefined) return fallback
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'string') {
+    const lowered = value.toLowerCase()
+    if (lowered === 'true') return true
+    if (lowered === 'false') return false
+  }
+
+  return fallback
+}
+
 const loadConfig = async () => {
   try {
     const data = await fs.readFile(CONFIG_FILE, 'utf8')
-    return JSON.parse(data)
+    const parsed = JSON.parse(data)
+
+    return {
+      ...parsed,
+      defaultConvertBinary: normalizeBoolean(parsed.defaultConvertBinary, false),
+      defaultVerbose: normalizeBoolean(parsed.defaultVerbose, false),
+      defaultForceChange: normalizeBoolean(parsed.defaultForceChange, false),
+      defaultLog: normalizeBoolean(parsed.defaultLog),
+      defaultIncludeSubdirectories: normalizeBoolean(parsed.defaultIncludeSubdirectories, false),
+      defaultUseFilenameHint: normalizeBoolean(parsed.defaultUseFilenameHint, true),
+      defaultMetadataHints: normalizeBoolean(parsed.defaultMetadataHints, true)
+    }
   } catch (err) {
     return {}
   }
@@ -70,13 +93,52 @@ module.exports = async () => {
     })
     .option('include-subdirectories', {
       alias: 's',
-      type: 'string',
-      description: 'Include files in subdirectories when processing (e.g: true, false)'
+      type: 'boolean',
+      description: 'Include files in subdirectories when processing',
+      default: config.defaultIncludeSubdirectories || false
     })
     .option('custom-prompt', {
       alias: 'r',
       type: 'string',
       description: 'Add a custom prompt to the LLM (e.g. "Only describe the background")'
+    })
+    .option('convertbinary', {
+      alias: 'convert-binary',
+      type: 'boolean',
+      description: 'Convert legacy binary Microsoft Office documents before parsing',
+      default: config.defaultConvertBinary || false
+    })
+    .option('verbose', {
+      alias: 'V',
+      type: 'boolean',
+      description: 'Enable verbose logging',
+      default: config.defaultVerbose || false
+    })
+    .option('force-change', {
+      alias: 'F',
+      type: 'boolean',
+      description: 'Apply suggested filenames without prompting for confirmation',
+      default: config.defaultForceChange || false
+    })
+    .option('log-path', {
+      type: 'string',
+      description: 'Path to write the run log (defaults to command name plus timestamp)',
+      default: config.defaultLogPath
+    })
+    .option('log', {
+      type: 'boolean',
+      description: 'Write a run log detailing all accepted renames',
+      default: config.defaultLog !== undefined ? config.defaultLog : true
+    })
+    .option('use-filename-hint', {
+      type: 'boolean',
+      description: 'Include the current filename in the prompt for additional context',
+      default: config.defaultUseFilenameHint !== undefined ? config.defaultUseFilenameHint : true
+    })
+    .option('metadata-hints', {
+      type: 'boolean',
+      description: 'Provide file metadata (dates, size) to the model when available',
+      default: config.defaultMetadataHints !== undefined ? config.defaultMetadataHints : true
     }).argv
 
   if (argv.help) {
@@ -124,13 +186,78 @@ module.exports = async () => {
     await saveConfig({ config })
   }
 
-  if (argv['include-subdirectories']) {
+  const includeSubdirectoriesProvided = process.argv.some((arg) => {
+    return arg === '--include-subdirectories' || arg === '--no-include-subdirectories' || arg === '-s' || arg.startsWith('--include-subdirectories=') || arg.startsWith('--no-include-subdirectories=')
+  })
+
+  if (includeSubdirectoriesProvided) {
     config.defaultIncludeSubdirectories = argv['include-subdirectories']
     await saveConfig({ config })
   }
 
   if (argv['custom-prompt']) {
     config.defaultCustomPrompt = argv['custom-prompt']
+    await saveConfig({ config })
+  }
+
+  if (process.argv.includes('--convertbinary') || process.argv.includes('--convert-binary') || process.argv.includes('--no-convertbinary') || process.argv.includes('--no-convert-binary')) {
+    config.defaultConvertBinary = argv.convertbinary
+    await saveConfig({ config })
+  }
+
+  const verboseProvided = process.argv.some((arg) => {
+    return arg === '--verbose' || arg === '--no-verbose' || arg === '-V' || arg.startsWith('--verbose=') || arg.startsWith('--no-verbose=')
+  })
+
+  if (verboseProvided) {
+    config.defaultVerbose = argv.verbose
+    await saveConfig({ config })
+  }
+
+  const forceProvided = process.argv.some((arg) => {
+    return arg === '--force-change' || arg === '--no-force-change' || arg === '-F' || arg.startsWith('--force-change=') || arg.startsWith('--no-force-change=')
+  })
+
+  if (forceProvided) {
+    config.defaultForceChange = argv['force-change']
+    await saveConfig({ config })
+  }
+
+  if (argv['log-path']) {
+    config.defaultLogPath = argv['log-path']
+    await saveConfig({ config })
+  }
+
+  const logProvided = process.argv.some((arg) => {
+    return arg === '--log' || arg === '--no-log' || arg.startsWith('--log=') || arg.startsWith('--no-log=')
+  })
+
+  if (logProvided) {
+    config.defaultLog = argv.log
+    await saveConfig({ config })
+  }
+
+  const filenameHintProvided = process.argv.some((arg) => {
+    return arg === '--use-filename-hint' ||
+      arg === '--no-use-filename-hint' ||
+      arg.startsWith('--use-filename-hint=') ||
+      arg.startsWith('--no-use-filename-hint=')
+  })
+
+  if (filenameHintProvided) {
+    config.defaultUseFilenameHint = argv['use-filename-hint']
+    await saveConfig({ config })
+  }
+
+  const metadataHintsProvided = process.argv.some((arg) => {
+    return arg === '--metadata-hints' ||
+      arg === '--no-metadata-hints' ||
+      arg.startsWith('--metadata-hints=') ||
+      arg.startsWith('--no-metadata-hints=')
+  })
+
+  if (metadataHintsProvided) {
+    config.defaultMetadataHints = argv['metadata-hints']
     await saveConfig({ config })
   }
 

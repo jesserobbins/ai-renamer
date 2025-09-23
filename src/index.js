@@ -6,7 +6,8 @@ const configureYargs = require('./configureYargs')
 const main = async () => {
   try {
     const { argv, config } = await configureYargs()
-    const [inputPath] = argv._
+    const [rawInputPath] = argv._
+    const inputPath = typeof rawInputPath === 'string' ? rawInputPath.trim() : rawInputPath
 
     if (!inputPath) {
       console.log('🔴 Please provide a file or folder path')
