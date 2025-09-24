@@ -141,6 +141,7 @@ module.exports = ({ text, maxChars = 20000 } = {}) => {
   const fundingMatches = collectMatches(normalized, FUNDING_KEYWORDS)
   const investorMatches = collectMatches(normalized, INVESTOR_KEYWORDS)
   const sectionMatches = collectMatches(normalized, SECTION_KEYWORDS)
+  const hasMultipleSections = sectionMatches.length >= 4
 
   let score = 0
   if (strongMatches.length > 0) {
@@ -154,9 +155,12 @@ module.exports = ({ text, maxChars = 20000 } = {}) => {
   }
   if (sectionMatches.length > 0) {
     score += Math.min(sectionMatches.length, 6) * 0.5
+    if (hasMultipleSections) {
+      score += 2
+    }
   }
 
-  const isPitchDeck = score >= 3.5 || strongMatches.length > 0
+  const isPitchDeck = score >= 3.5 || strongMatches.length > 0 || hasMultipleSections
 
   const lines = limited
     .split(/\r?\n/)
