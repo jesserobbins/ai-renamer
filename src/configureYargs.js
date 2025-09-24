@@ -33,6 +33,7 @@ const loadConfig = async () => {
       defaultUseFilenameHint: normalizeBoolean(parsed.defaultUseFilenameHint, true),
       defaultMetadataHints: normalizeBoolean(parsed.defaultMetadataHints, true),
       defaultAppendTags: normalizeBoolean(parsed.defaultAppendTags, false),
+      defaultPitchDeckOnly: normalizeBoolean(parsed.defaultPitchDeckOnly, false),
       defaultCompanyFocus: normalizeBoolean(parsed.defaultCompanyFocus, false),
       defaultPeopleFocus: normalizeBoolean(parsed.defaultPeopleFocus, false),
       defaultProjectFocus: normalizeBoolean(parsed.defaultProjectFocus, false)
@@ -148,6 +149,11 @@ module.exports = async () => {
       type: 'boolean',
       description: 'Append macOS Finder tags to the generated filename before the date segment',
       default: config.defaultAppendTags || false
+    })
+    .option('pitch-deck-only', {
+      type: 'boolean',
+      description: 'Only rename PDFs detected as startup pitch decks using the dedicated filename template',
+      default: config.defaultPitchDeckOnly || false
     })
     .option('company-focus', {
       type: 'boolean',
@@ -291,6 +297,16 @@ module.exports = async () => {
 
   if (appendTagsProvided) {
     config.defaultAppendTags = argv['append-tags']
+    await saveConfig({ config })
+  }
+
+  const pitchDeckProvided = process.argv.some((arg) => {
+    return arg === '--pitch-deck-only' || arg === '--no-pitch-deck-only' ||
+      arg.startsWith('--pitch-deck-only=') || arg.startsWith('--no-pitch-deck-only=')
+  })
+
+  if (pitchDeckProvided) {
+    config.defaultPitchDeckOnly = argv['pitch-deck-only']
     await saveConfig({ config })
   }
 

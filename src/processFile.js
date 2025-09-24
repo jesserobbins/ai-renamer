@@ -7,6 +7,7 @@ const isImage = require('./isImage')
 const isVideo = require('./isVideo')
 const saveFile = require('./saveFile')
 const getNewName = require('./getNewName')
+const detectPitchDeck = require('./detectPitchDeck')
 const extractFrames = require('./extractFrames')
 const readFileContent = require('./readFileContent')
 const deleteDirectory = require('./deleteDirectory')
@@ -103,7 +104,8 @@ module.exports = async options => {
       recordLogEntry,
       metadataHints,
       useFilenameHint,
-      appendTags
+      appendTags,
+      pitchDeckOnly
     } = options
 
     verboseFlag = verbose
@@ -173,9 +175,15 @@ module.exports = async options => {
       return
     }
 
+    if (pitchDeckOnly && ext !== '.pdf') {
+      console.log(`⚪ Pitch deck mode: skipping non-PDF file ${relativeFilePath}`)
+      return
+    }
+
     let content
     let videoPrompt
     let images = []
+    let pitchDeckDetection = null
     if (isImage({ ext })) {
       logVerbose(verbose, `🖼️ Detected image: ${relativeFilePath}`)
       images.push(filePath)
@@ -198,6 +206,21 @@ module.exports = async options => {
         return
       }
       logVerbose(verbose, `✅ Extracted ${content.length} characters from ${relativeFilePath}`)
+      if (pitchDeckOnly) {
+        pitchDeckDetection = detectPitchDeck({ text: content })
+        if (!pitchDeckDetection.isPitchDeck) {
+          const reason = pitchDeckDetection.summary
+            ? ` (${pitchDeckDetection.summary})`
+            : ''
+          console.log(`⚪ Pitch deck detection: no startup deck indicators${reason}. Skipping ${relativeFilePath}.`)
+          return
+        }
+        const detectionLabel = pitchDeckDetection.confidence
+          ? ` (confidence: ${pitchDeckDetection.confidence})`
+          : ''
+        const detail = pitchDeckDetection.summary ? ` ${pitchDeckDetection.summary}` : ''
+        console.log(`⚪ Pitch deck detection: startup deck confirmed${detectionLabel}.${detail}`)
+      }
     }
 
     const newNameResult = await getNewName({
@@ -211,9 +234,21 @@ module.exports = async options => {
       metadataHints,
       useFilenameHint,
       appendTags,
-      macTags: finderTags
+      macTags: finderTags,
+      pitchDeckMode: Boolean(pitchDeckOnly),
+      pitchDeckDetection
     })
-    if (!newNameResult || !newNameResult.filename) return
+    if (!newNameResult) return
+
+    if (newNameResult.skipped) {
+      if (newNameResult.context && newNameResult.context.summary) {
+        console.log(`ℹ️ ${newNameResult.context.summary}`)
+      }
+      console.log(`⚪ Skipped rename: ${relativeFilePath}`)
+      return
+    }
+
+    if (!newNameResult.filename) return
 
     const { filename: proposedName, context: nameContext } = newNameResult
 

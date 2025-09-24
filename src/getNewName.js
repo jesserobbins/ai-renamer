@@ -267,23 +267,41 @@ const composePromptLines = ({
   contentOriginalLength,
   contentTruncated,
   customPrompt,
-  promptFocus
+  promptFocus,
+  pitchDeckMode,
+  pitchDeckDetection
 }) => {
-  const lines = [
-    'You rename documents using descriptive structured filenames.',
-    'Follow this order: [Primary subject] - [Purpose or title] - [Document type] - [Version identifier] - [Best available date in YYYY-MM-DD].',
-    getFocusGuidance(promptFocus),
-    'Use real wording from the document or metadata and omit any segment that is not clearly supported.',
-    'Include authentic revision numbers or version labels (e.g., v1, draft, executed) when they appear.',
-    'Prefer ISO-style dates (YYYY-MM-DD). If only month or year is known, use the most precise available format.',
-    'Do not invent information, do not include the file extension, and avoid extra punctuation beyond hyphens or spaces.',
+  const lines = []
+
+  if (pitchDeckMode) {
+    lines.push(
+      'You rename startup fundraising pitch decks. Your response must either be a structured filename or the single word SKIP.',
+      'If the document is not a startup pitch deck, respond with SKIP (uppercase) and no additional text.',
+      'When it is a pitch deck, output a filename following this structure: Startup - [Company or team] - [Funding round or investor focus] - Pitch Deck - [Version or iteration] - [Best available date in YYYY-MM-DD].',
+      'Use only information that is clearly supported by the content or metadata. Prefer concise funding descriptors (Seed, Series A, Bridge, etc.) and realistic version labels (v1, Draft, Update).',
+      'If a segment is unknown, use a brief factual placeholder such as Unknown or Draft rather than inventing details.'
+    )
+    lines.push(getFocusGuidance(promptFocus))
+  } else {
+    lines.push(
+      'You rename documents using descriptive structured filenames.',
+      'Follow this order: [Primary subject] - [Purpose or title] - [Document type] - [Version identifier] - [Best available date in YYYY-MM-DD].',
+      getFocusGuidance(promptFocus),
+      'Use real wording from the document or metadata and omit any segment that is not clearly supported.',
+      'Include authentic revision numbers or version labels (e.g., v1, draft, executed) when they appear.',
+      'Prefer ISO-style dates (YYYY-MM-DD). If only month or year is known, use the most precise available format.',
+      'Do not invent information, do not include the file extension, and avoid extra punctuation beyond hyphens or spaces.'
+    )
+  }
+
+  lines.push(
     '',
     `Case style: ${_case}`,
     `Maximum characters: ${chars}`,
     `Language: ${language}`,
     'Return only the filename text.',
     ''
-  ]
+  )
 
   if (useFilenameHint && originalFileName) {
     lines.push('', `Current filename for context: ${originalFileName}`)
@@ -294,6 +312,23 @@ const composePromptLines = ({
     lines.push(...metadataHintLines.map(line => `- ${line}`))
     if (metadataFallback) {
       lines.push(`If the content lacks a clear date, fall back to the ${metadataFallback.type} date above.`)
+    }
+  }
+
+  if (pitchDeckMode && pitchDeckDetection) {
+    if (pitchDeckDetection.summary) {
+      lines.push('', `Pitch deck heuristics: ${pitchDeckDetection.summary}`)
+    }
+    if (Array.isArray(pitchDeckDetection.companyCandidates) && pitchDeckDetection.companyCandidates.length > 0) {
+      lines.push('', 'Potential company names:')
+      lines.push(...pitchDeckDetection.companyCandidates.slice(0, 5).map(name => `- ${name}`))
+    }
+    if (Array.isArray(pitchDeckDetection.fundingMentions) && pitchDeckDetection.fundingMentions.length > 0) {
+      lines.push('', 'Funding round references detected:')
+      lines.push(...pitchDeckDetection.fundingMentions.slice(0, 5).map(term => `- ${term}`))
+    }
+    if (pitchDeckDetection.sampleTitle) {
+      lines.push('', `Representative slide or heading: ${pitchDeckDetection.sampleTitle}`)
     }
   }
 
@@ -331,7 +366,9 @@ module.exports = async options => {
     useFilenameHint = true,
     appendTags = false,
     macTags = [],
-    promptFocus = 'balanced'
+    promptFocus = 'balanced',
+    pitchDeckMode = false,
+    pitchDeckDetection = null
   } = options
 
   try {
@@ -368,7 +405,9 @@ module.exports = async options => {
       contentOriginalLength: originalContentLength,
       contentTruncated,
       customPrompt,
-      promptFocus
+      promptFocus,
+      pitchDeckMode,
+      pitchDeckDetection
     })
 
     let promptLines = assemblePrompt()
@@ -395,6 +434,65 @@ module.exports = async options => {
     const modelResult = await getModelResponse({ ...options, prompt })
 
     const safeCharLimit = Number.isFinite(chars) && chars > 0 ? Math.floor(chars) : 20
+
+    const normalizedReply = typeof modelResult === 'string' ? modelResult.trim() : ''
+    if (pitchDeckMode) {
+      const skipCheck = normalizedReply.replace(/\s+/g, ' ').trim()
+      if (!skipCheck || /^skip\b/i.test(skipCheck)) {
+        const source = content
+          ? 'text'
+          : Array.isArray(options.images) && options.images.length > 0
+            ? 'visual'
+            : 'prompt-only'
+
+        const summaryParts = ['Model indicated this document is not a startup pitch deck. Renaming was skipped.']
+        if (!skipCheck) {
+          summaryParts.push('The model returned an empty response while pitch deck mode was enabled.')
+        }
+        if (pitchDeckDetection && pitchDeckDetection.summary) {
+          summaryParts.push(pitchDeckDetection.summary)
+        }
+
+        const skipContext = {
+          summary: summaryParts.join(' '),
+          candidate: null,
+          usedFallback: false,
+          caseStyle: _case,
+          charLimit: safeCharLimit,
+          truncated: false,
+          finalName: null,
+          source,
+          modelResponse: modelResult,
+          modelResponsePreview: modelResult ? modelResult.slice(0, 280) : null,
+          customPromptIncluded: Boolean(customPrompt),
+          videoSummaryIncluded: Boolean(videoPrompt),
+          contentLength: content ? content.length : 0,
+          contentSnippetLength: contentSnippet ? contentSnippet.length : 0,
+          contentTruncated,
+          promptLength: prompt.length,
+          promptPreview: prompt.slice(0, 500),
+          promptTrimmed,
+          maxPromptChars,
+          maxContentChars,
+          filenameHintIncluded: Boolean(useFilenameHint && originalFileName),
+          metadataHintIncluded: Boolean(metadataHints && fileMetadata),
+          metadataFallback: metadataInfo.fallbackDate,
+          metadataFallbackApplied: false,
+          metadataFallbackValue: null,
+          originalFileName,
+          metadataSummary: metadataInfo.lines,
+          appendTagsEnabled: Boolean(appendTags),
+          finderTagsDetected: Array.isArray(macTags) ? [...macTags] : [],
+          finderTagsApplied: [],
+          promptFocus,
+          pitchDeckMode: true,
+          pitchDeckDetection,
+          pitchDeckSkip: true
+        }
+
+        return { filename: null, skipped: true, context: skipContext }
+      }
+    }
     const candidateLimit = (() => {
       if (!Number.isFinite(safeCharLimit) || safeCharLimit <= 0) return 120
       const allowance = Math.max(20, Math.floor(safeCharLimit * 0.25))
@@ -478,6 +576,15 @@ module.exports = async options => {
         summaryParts.push('Finder tag appending was enabled but no Finder tags were detected on the file.')
       }
     }
+    if (pitchDeckMode) {
+      summaryParts.push('Startup pitch deck mode enforced the dedicated naming template.')
+      if (pitchDeckDetection && pitchDeckDetection.summary) {
+        summaryParts.push(pitchDeckDetection.summary)
+      }
+      if (pitchDeckDetection && pitchDeckDetection.confidence) {
+        summaryParts.push(`Heuristic confidence rated ${pitchDeckDetection.confidence}.`)
+      }
+    }
     const focusSummary = describeFocusForSummary(promptFocus)
     if (focusSummary) {
       summaryParts.push(`Used ${focusSummary} to guide the naming order.`)
@@ -546,7 +653,10 @@ module.exports = async options => {
       appendTagsEnabled: Boolean(appendTags),
       finderTagsDetected: Array.isArray(macTags) ? [...macTags] : [],
       finderTagsApplied,
-      promptFocus
+      promptFocus,
+      pitchDeckMode: Boolean(pitchDeckMode),
+      pitchDeckDetection,
+      pitchDeckSkip: false
     }
 
     return { filename, context }

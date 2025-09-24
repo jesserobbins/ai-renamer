@@ -25,6 +25,7 @@ module.exports = async ({
   defaultUseFilenameHint,
   defaultMetadataHints,
   defaultAppendTags,
+  defaultPitchDeckOnly,
   defaultCompanyFocus,
   defaultPeopleFocus,
   defaultProjectFocus
@@ -103,6 +104,9 @@ module.exports = async ({
 
     const appendTags = interpretBoolean(defaultAppendTags, false)
     console.log(`⚪ Append Finder tags: ${appendTags}`)
+
+    const pitchDeckOnly = interpretBoolean(defaultPitchDeckOnly, false)
+    console.log(`⚪ Startup pitch deck mode: ${pitchDeckOnly}`)
 
     const companyFocus = interpretBoolean(defaultCompanyFocus, false)
     const peopleFocus = interpretBoolean(defaultPeopleFocus, false)
@@ -192,6 +196,7 @@ module.exports = async ({
       useFilenameHint,
       metadataHints,
       appendTags,
+      pitchDeckOnly,
       promptFocus,
       companyFocus,
       peopleFocus,
@@ -241,6 +246,7 @@ module.exports = async ({
             useFilenameHint,
             metadataHints,
             appendTags,
+            pitchDeckOnly,
             promptFocus,
             companyFocus,
             peopleFocus,
