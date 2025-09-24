@@ -440,7 +440,8 @@ const convertBinaryOfficeToDocx = async ({ filePath, ext, verbose = false }) => 
     throw new Error(`Unsupported binary Office extension: ${ext}`)
   }
 
-  const baseName = path.basename(filePath, ext) || 'converted'
+  const parsedPath = path.parse(filePath)
+  const baseName = (parsedPath && parsedPath.name) ? parsedPath.name : 'converted'
   const originalDocxPath = path.join(path.dirname(filePath), `${baseName}.docx`)
   const originalDocxExists = await fileExists(originalDocxPath)
   const originalDocxInfo = { path: originalDocxPath, existed: originalDocxExists }

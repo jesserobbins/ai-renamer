@@ -385,10 +385,97 @@ const extractOpenDocumentText = (entries) => {
   return normalizeWhitespace(decodeXmlEntities(stripped))
 }
 
-const readPdf = async (filePath) => {
+const normalizeInfoEntries = (info) => {
+  if (!info || typeof info !== 'object') return []
+  const entries = []
+  for (const [key, rawValue] of Object.entries(info)) {
+    if (rawValue == null) continue
+    const value = String(rawValue).trim()
+    if (!value) continue
+    entries.push(`${key}: ${value}`)
+  }
+  return entries
+}
+
+const extractMetadataValue = (metadata, key) => {
+  if (!metadata) return ''
+
+  const tryGet = (container) => {
+    if (!container) return ''
+    if (typeof container.get === 'function') {
+      const value = container.get(key)
+      if (value) return value
+    }
+    if (container instanceof Map) {
+      const value = container.get(key)
+      if (value) return value
+    }
+    if (container._metadataMap instanceof Map) {
+      const value = container._metadataMap.get(key)
+      if (value) return value
+    }
+    return ''
+  }
+
+  const sources = [metadata, metadata.metadata, metadata._metadataMap]
+  for (const source of sources) {
+    const raw = tryGet(source)
+    if (!raw) continue
+    if (Array.isArray(raw)) {
+      return raw.map((item) => (typeof item === 'string' ? item.trim() : String(item))).filter(Boolean).join(', ')
+    }
+    if (typeof raw === 'string') {
+      return raw.trim()
+    }
+    if (raw != null) {
+      return String(raw).trim()
+    }
+  }
+
+  return ''
+}
+
+const extractMetadataEntries = (metadata) => {
+  if (!metadata) return []
+
+  const metadataKeys = [
+    ['dc:title', 'Title'],
+    ['dc:subject', 'Subject'],
+    ['dc:creator', 'Creator'],
+    ['pdf:Keywords', 'Keywords'],
+    ['xmp:CreateDate', 'Created'],
+    ['xmp:ModifyDate', 'Modified']
+  ]
+
+  const entries = []
+  for (const [key, label] of metadataKeys) {
+    const value = extractMetadataValue(metadata, key)
+    if (value) {
+      entries.push(`${label}: ${value}`)
+    }
+  }
+
+  return entries
+}
+
+const readPdf = async (filePath, { verbose = false } = {}) => {
   const dataBuffer = await fs.readFile(filePath)
   const pdfData = await pdf(dataBuffer)
-  return pdfData.text.trim()
+
+  const text = typeof pdfData.text === 'string' ? pdfData.text.trim() : ''
+  if (text) return text
+
+  const infoEntries = normalizeInfoEntries(pdfData.info)
+  const metadataEntries = extractMetadataEntries(pdfData.metadata)
+  const fallbackSections = [...infoEntries, ...metadataEntries]
+
+  if (fallbackSections.length > 0) {
+    logVerbose(verbose, '📎 Using PDF metadata fallback because no extractable text was found')
+    return fallbackSections.join('\n')
+  }
+
+  logVerbose(verbose, '⚠️ PDF text extraction yielded no content or metadata; providing descriptive placeholder text')
+  return 'No extractable text was found in this PDF. Use filename, metadata, and context clues to describe it.'
 }
 
 const readDocxLike = async (filePath) => {
@@ -448,7 +535,7 @@ module.exports = async ({ filePath, convertBinary = false, verbose = false }) =>
 
   if (ext === '.pdf') {
     logVerbose(verbose, '📑 Parsing PDF document')
-    return readPdf(filePath)
+    return readPdf(filePath, { verbose })
   }
 
   if (DOCX_LIKE_EXTENSIONS.has(ext)) {
