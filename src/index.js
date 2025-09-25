@@ -1,22 +1,51 @@
 #!/usr/bin/env node
 
-const processPath = require('./processPath')
-const configureYargs = require('./configureYargs')
+const path = require('path')
+const process = require('process')
 
-const main = async () => {
+const { createCli } = require('./cli/createCli')
+const { loadConfig, saveConfig, filterPersistedOptions } = require('./config/configStore')
+const { runRenamer } = require('./core/runRenamer')
+const { buildLogger } = require('./utils/logger')
+
+async function main () {
+  const logger = buildLogger()
+  const config = await loadConfig()
+  const cli = createCli(config)
+
+  let argv
   try {
-    const { argv, config } = await configureYargs()
-    const [rawInputPath] = argv._
-    const inputPath = typeof rawInputPath === 'string' ? rawInputPath.trim() : rawInputPath
+    argv = await cli.parseAsync()
+  } catch (error) {
+    logger.error(error.message)
+    process.exitCode = 1
+    return
+  }
 
-    if (!inputPath) {
-      console.log('🔴 Please provide a file or folder path')
-      process.exit(1)
+  const targetPath = argv._[0]
+  if (!targetPath) {
+    cli.showHelp()
+    process.exitCode = 1
+    return
+  }
+
+  const resolvedTargetPath = path.resolve(process.cwd(), targetPath)
+
+  const effectiveOptions = { ...config, ...argv }
+  delete effectiveOptions._
+  delete effectiveOptions.$0
+
+  const persistedOptions = filterPersistedOptions(effectiveOptions)
+  await saveConfig(persistedOptions)
+
+  try {
+    await runRenamer(resolvedTargetPath, effectiveOptions, logger)
+  } catch (error) {
+    logger.error(error.message)
+    if (error.stack) {
+      logger.debug(error.stack)
     }
-
-    await processPath({ ...config, inputPath })
-  } catch (err) {
-    console.log(err.message)
+    process.exitCode = 1
   }
 }
 

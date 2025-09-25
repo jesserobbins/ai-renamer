@@ -31,6 +31,10 @@ The CLI stores your preferred switches (provider, model, case style, subject-org
 - **Subject organization** – Group files into startup- or project-specific folders, feed existing folder names back into prompts to keep naming consistent, and optionally quarantine uncertain matches in an `Unknown` folder.
 
 ## Installation
+### Prerequisites
+- [Node.js](https://nodejs.org/) 18 or newer.
+- [`ffmpeg`](https://ffmpeg.org/) and `ffprobe` available on your `PATH` for video frame extraction.
+
 ```bash
 # Install globally
 npm install -g ai-renamer
@@ -110,6 +114,10 @@ Options:
                                 (e.g: true, false)                      [string]
   -r, --custom-prompt           Add a custom prompt to the LLM (e.g. "Only
                                 describe the background")               [string]
+      --instructions-file       Append additional system instructions from a
+                                local file                               [string]
+      --subject-stopwords       Comma-separated tokens to strip from detected
+                                subject names                            [string]
       --dry-run                 Preview suggestions without renaming     [boolean]
       --summary                 Print a summary report after the run     [boolean]
       --max-file-size           Skip files larger than the given size in MB
@@ -146,6 +154,8 @@ trainCase: Two-Words
 Enable `--organize-by-subject` to route accepted renames into folders named after their inferred company, project, or person. Before processing begins the CLI scans the destination directory, adds existing folder names to the prompt as hints, and keeps the list in memory to avoid duplicates during the run. Use `--subject-destination` to route the folders (and the generated log) to a different workspace, and add `--move-unknown-subjects` to quarantine low-confidence matches in an `Unknown` folder.
 
 Dry-run mode prints the proposed folder moves without touching the filesystem so you can vet the plan before committing. When renames are confirmed, the tool records the chosen subject, destination, and confidence in the run summary for later auditing.
+
+Prompts emphasise clean company names by stripping financing or investor descriptors (e.g. "pitch", "Series A", "seed round"). Add your own red-flag tokens with `--subject-stopwords`, or append bespoke instructions with `--instructions-file` to fine-tune the guidance the LLM receives.
 
 ## Contribution
 Feel free to contribute. Open a new [issue](https://github.com/ozgrozer/ai-renamer/issues) or start a [pull request](https://github.com/ozgrozer/ai-renamer/pulls).
