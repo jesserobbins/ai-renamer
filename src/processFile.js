@@ -23,6 +23,11 @@ const readFileContent = require('./readFileContent')
 const deleteDirectory = require('./deleteDirectory')
 const isProcessableFile = require('./isProcessableFile')
 const getMacOSTags = require('./getMacOSTags')
+const {
+  sanitizeSubjectFolderName,
+  isLowConfidenceSubject,
+  normalizeSubjectKey
+} = require('./subjectUtils')
 
 const ansi = {
   reset: '\x1b[0m',
@@ -136,41 +141,25 @@ const promptForConfirmation = async ({ question, forceChange, nonInteractiveMess
   })
 }
 
-const logVerbose = (verbose, message) => {
-  if (!verbose) return
-  console.log(message)
-}
-
-const promptForConfirmation = async ({ question, forceChange, nonInteractiveMessage }) => {
-  if (forceChange) return true
-
-  if (!process.stdin.isTTY) {
-    if (nonInteractiveMessage) {
-      console.log(nonInteractiveMessage)
-    }
-    return false
-  }
-
-  return await new Promise(resolve => {
-    const rl = readline.createInterface({
-      input: process.stdin,
-      output: process.stdout
-    })
-
-    rl.question(question, answer => {
-      rl.close()
-      const normalized = answer.trim().toLowerCase()
-      resolve(normalized === 'y' || normalized === 'yes')
-    })
-  })
-}
-
 module.exports = async options => {
   const { filePath } = options
   let framesOutputDir
   let ext
   let verboseFlag = false
   let relativeFilePath = ''
+
+  const trackResult = typeof options.trackResult === 'function'
+    ? options.trackResult
+    : null
+
+  const promptFocus = typeof options.promptFocus === 'string'
+    ? options.promptFocus
+    : 'balanced'
+
+  const recordOutcome = (type, payload = {}) => {
+    if (!trackResult) return
+    trackResult({ type, ...payload })
+  }
 
   try {
     const {
@@ -185,7 +174,13 @@ module.exports = async options => {
       useFilenameHint,
       appendTags,
       pitchDeckOnly,
-      acceptOnEnter
+      acceptOnEnter,
+      dryRun = false,
+      maxFileSizeBytes,
+      allowedExtensions,
+      ignoredExtensions,
+      subjectOrganization,
+      inputRootDirectory
     } = options
 
     verboseFlag = verbose
@@ -194,6 +189,8 @@ module.exports = async options => {
     const fileName = path.basename(filePath)
     ext = path.extname(filePath).toLowerCase()
     relativeFilePath = path.relative(inputPath, filePath) || fileName
+
+    recordOutcome('processed')
 
 
     // Capture filesystem metadata up front so we can both feed it to the
@@ -230,6 +227,12 @@ module.exports = async options => {
       }
 
       logVerbose(verbose, `🗂️ Metadata — size: ${prettySize || stats.size || 'unknown'}, created: ${createdAt || 'n/a'}, modified: ${modifiedAt || 'n/a'}`)
+      if (maxFileSizeBytes && Number.isFinite(stats.size) && stats.size > maxFileSizeBytes) {
+        const readableSize = prettySize || `${stats.size} bytes`
+        console.log(`⚪ Max size filter: skipping ${relativeFilePath} (${readableSize})`)
+        recordOutcome('skipped', { reason: `exceeds max size (${readableSize})` })
+        return
+      }
     } catch (metadataError) {
       logVerbose(verbose, `⚪ Unable to read metadata for ${relativeFilePath}: ${metadataError.message}`)
     }
@@ -255,15 +258,38 @@ module.exports = async options => {
 
     logVerbose(verbose, `🔍 Processing file: ${relativeFilePath}`)
 
-    if (fileName === '.DS_Store') return
+    if (fileName === '.DS_Store') {
+      recordOutcome('skipped', { reason: 'ignored system file' })
+      return
+    }
+
+    const allowedSet = allowedExtensions instanceof Set ? allowedExtensions : null
+    if (allowedSet && allowedSet.size > 0 && !allowedSet.has(ext)) {
+      console.log(`⚪ Extension filter: skipping ${relativeFilePath} (${ext || 'no extension'})`)
+      const extensionLabel = ext || 'no extension'
+      recordOutcome('skipped', { reason: `filtered by allow list (${extensionLabel})` })
+      return
+    }
+
+    const ignoredSet = ignoredExtensions instanceof Set ? ignoredExtensions : null
+    if (ignoredSet && ignoredSet.has(ext)) {
+      console.log(`⚪ Ignored extension: skipping ${relativeFilePath} (${ext || 'no extension'})`)
+      const extensionLabel = ext || 'no extension'
+      recordOutcome('skipped', { reason: `filtered by ignore list (${extensionLabel})` })
+      return
+    }
 
     if (!isProcessableFile({ filePath })) {
       console.log(`🟡 Unsupported file: ${relativeFilePath}`)
+      const extensionLabel = ext || 'no extension'
+      recordOutcome('skipped', { reason: `unsupported file type (${extensionLabel})` })
       return
     }
 
     if (pitchDeckOnly && ext !== '.pdf') {
       console.log(`⚪ Pitch deck mode: skipping non-PDF file ${relativeFilePath}`)
+      const extensionLabel = ext || 'no extension'
+      recordOutcome('skipped', { reason: `pitch deck mode (non-PDF ${extensionLabel})` })
       return
     }
 
@@ -298,6 +324,7 @@ module.exports = async options => {
 
       if (!content) {
         console.log(`🔴 No text content: ${relativeFilePath}`)
+        recordOutcome('skipped', { reason: 'no text content extracted' })
         return
       }
       logVerbose(verbose, `✅ Extracted ${content.length} characters from ${relativeFilePath}`)
@@ -309,6 +336,10 @@ module.exports = async options => {
             ? ` (${pitchDeckDetection.summary})`
             : ''
           console.log(`⚪ Pitch deck detection: no startup deck indicators${reason}. Skipping ${relativeFilePath}.`)
+          const detectionReason = pitchDeckDetection.summary
+            ? `pitch deck filter — ${pitchDeckDetection.summary}`
+            : 'pitch deck filter'
+          recordOutcome('skipped', { reason: detectionReason })
           return
         }
         const detectionLabel = pitchDeckDetection.confidence
@@ -321,6 +352,11 @@ module.exports = async options => {
 
     // At this point we have every relevant hint; hand off to the rename engine
     // so it can craft a prompt and parse the model's response.
+    const shouldIncludeSubjectHints = promptFocus !== 'company'
+    const subjectHintsForPrompt = shouldIncludeSubjectHints && subjectOrganization && subjectOrganization.hintSet instanceof Set
+      ? Array.from(subjectOrganization.hintSet)
+      : []
+
     const newNameResult = await getNewName({
       ...options,
       images,
@@ -334,24 +370,178 @@ module.exports = async options => {
       appendTags,
       macTags: finderTags,
       pitchDeckMode: Boolean(pitchDeckOnly),
-      pitchDeckDetection
+      pitchDeckDetection,
+      subjectHints: subjectHintsForPrompt
     })
-    if (!newNameResult) return
 
-    if (newNameResult.skipped) {
-      if (newNameResult.context && newNameResult.context.summary) {
-        console.log(`ℹ️ ${newNameResult.context.summary}`)
-      }
-      console.log(`⚪ Skipped rename: ${relativeFilePath}`)
+    if (!newNameResult) {
+      recordOutcome('skipped', { reason: 'no rename suggestion produced' })
       return
     }
 
-    if (!newNameResult.filename) return
+    if (newNameResult.skipped) {
+      let skipSummary = null
+      if (newNameResult.context && newNameResult.context.summary) {
+        skipSummary = newNameResult.context.summary
+        console.log(`ℹ️ ${skipSummary}`)
+      }
+      console.log(`⚪ Skipped rename: ${relativeFilePath}`)
+      const skipReason = skipSummary
+        ? `model requested skip — ${skipSummary}`
+        : 'model requested skip'
+      recordOutcome('skipped', { reason: skipReason })
+      return
+    }
+
+    if (!newNameResult.filename) {
+      recordOutcome('skipped', { reason: 'no filename returned from model' })
+      return
+    }
 
     const { filename: proposedName, context: nameContext } = newNameResult
 
     if (nameContext && nameContext.summary) {
       console.log(`ℹ️ ${nameContext.summary}`)
+    }
+
+    const subjectDetails = (() => {
+      const contextSubject = nameContext && typeof nameContext.subject === 'string'
+        ? nameContext.subject.trim()
+        : null
+      const normalizedFromContext = nameContext && typeof nameContext.subjectNormalized === 'string' && nameContext.subjectNormalized
+        ? nameContext.subjectNormalized
+        : contextSubject
+          ? normalizeSubjectKey(contextSubject)
+          : null
+      const confidenceFromContext = nameContext && typeof nameContext.subjectConfidence === 'string'
+        ? nameContext.subjectConfidence
+        : 'unknown'
+      const sourceFromContext = nameContext && typeof nameContext.subjectSource === 'string'
+        ? nameContext.subjectSource
+        : 'model'
+      return {
+        name: contextSubject || null,
+        normalizedKey: normalizedFromContext || null,
+        confidence: confidenceFromContext || 'unknown',
+        source: sourceFromContext || 'model'
+      }
+    })()
+
+    if (subjectOrganization && subjectOrganization.hintSet instanceof Set) {
+      if (subjectDetails.name) {
+        subjectOrganization.hintSet.add(subjectDetails.name)
+      }
+      if (nameContext && typeof nameContext.subjectMatchedHint === 'string') {
+        subjectOrganization.hintSet.add(nameContext.subjectMatchedHint)
+      }
+    }
+
+    const determineSubjectMovePlan = () => {
+      if (!subjectOrganization || !subjectOrganization.enabled) return null
+      const {
+        destinationRoot,
+        folderMap,
+        folderNameSet,
+        moveLowConfidence,
+        unknownFolderName
+      } = subjectOrganization
+      if (!destinationRoot || !(folderMap instanceof Map) || !(folderNameSet instanceof Set)) {
+        return null
+      }
+
+      const normalizedKey = subjectDetails.normalizedKey || (subjectDetails.name ? normalizeSubjectKey(subjectDetails.name) : null)
+      const lowConfidence = isLowConfidenceSubject({
+        subject: subjectDetails.name,
+        confidence: subjectDetails.confidence
+      })
+
+      if ((lowConfidence || !normalizedKey) && moveLowConfidence) {
+        const unknownKey = normalizeSubjectKey(unknownFolderName)
+        const existing = unknownKey ? folderMap.get(unknownKey) : null
+        const folderName = existing ? existing.folderName : unknownFolderName
+        const targetPath = existing ? existing.absolutePath : path.join(destinationRoot, folderName)
+        if (unknownKey) {
+          folderMap.set(unknownKey, { folderName, absolutePath: targetPath })
+        }
+        folderNameSet.add(folderName.toLowerCase())
+        return {
+          folderName,
+          targetPath,
+          normalizedKey: unknownKey,
+          reason: 'low-confidence',
+          subjectName: subjectDetails.name,
+          confidence: subjectDetails.confidence
+        }
+      }
+
+      if (!normalizedKey) {
+        return null
+      }
+
+      if (folderMap.has(normalizedKey)) {
+        const existing = folderMap.get(normalizedKey)
+        return {
+          folderName: existing.folderName,
+          targetPath: existing.absolutePath,
+          normalizedKey,
+          reason: 'existing',
+          subjectName: subjectDetails.name,
+          confidence: subjectDetails.confidence
+        }
+      }
+
+      if (!subjectDetails.name) {
+        return null
+      }
+
+      const baseFolderName = sanitizeSubjectFolderName(subjectDetails.name, 'Subject')
+      let candidateFolder = baseFolderName || 'Subject'
+      let counter = 2
+      while (folderNameSet.has(candidateFolder.toLowerCase())) {
+        candidateFolder = `${baseFolderName || 'Subject'}-${counter}`
+        counter += 1
+      }
+
+      const targetPath = path.join(destinationRoot, candidateFolder)
+      folderMap.set(normalizedKey, { folderName: candidateFolder, absolutePath: targetPath })
+      folderNameSet.add(candidateFolder.toLowerCase())
+      if (subjectOrganization.hintSet instanceof Set && subjectDetails.name) {
+        subjectOrganization.hintSet.add(subjectDetails.name)
+      }
+
+      return {
+        folderName: candidateFolder,
+        targetPath,
+        normalizedKey,
+        reason: 'new',
+        subjectName: subjectDetails.name,
+        confidence: subjectDetails.confidence
+      }
+    }
+
+    const subjectMovePlan = determineSubjectMovePlan()
+
+    if (subjectOrganization && subjectOrganization.enabled) {
+      const subjectLabel = subjectDetails.name || 'Unknown'
+      const confidenceLabel = subjectDetails.confidence || 'unknown'
+      console.log(`📁 Subject candidate: ${subjectLabel} (${confidenceLabel})`)
+      if (subjectMovePlan) {
+        switch (subjectMovePlan.reason) {
+          case 'low-confidence':
+            console.log(`📁 Subject routing: directing to ${subjectMovePlan.folderName} for low-confidence matches`)
+            break
+          case 'existing':
+            console.log(`📁 Subject routing: using existing folder ${subjectMovePlan.folderName}`)
+            break
+          case 'new':
+            console.log(`📁 Subject routing: planning new folder ${subjectMovePlan.folderName}`)
+            break
+          default:
+            console.log(`📁 Subject routing: moving to ${subjectMovePlan.folderName}`)
+        }
+      } else {
+        console.log('📁 Subject routing: keeping current directory')
+      }
     }
 
     const proposedRelativeNewPath = path.join(path.dirname(relativeFilePath), `${proposedName}${ext}`)
@@ -372,6 +562,23 @@ module.exports = async options => {
 
     if (!confirmed) {
       console.log(`⚪ Skipped rename: ${relativeFilePath}`)
+      recordOutcome('skipped', { reason: 'user declined confirmation' })
+      return
+    }
+
+    // In dry-run mode we present the approved preview and bail out before
+    // touching the filesystem so users can verify results safely.
+    if (dryRun) {
+      console.log(`🟢 [dry-run] ${renamePreview}`)
+      if (subjectOrganization && subjectOrganization.enabled) {
+        if (subjectMovePlan) {
+          const previewDestination = path.join(subjectMovePlan.folderName, `${proposedName}${ext}`)
+          console.log(`📦 [dry-run] Would move to ${previewDestination}`)
+        } else {
+          console.log('📦 [dry-run] Would leave the file in its current directory')
+        }
+      }
+      recordOutcome('dry-run', { preview: renamePreview })
       return
     }
 
@@ -379,26 +586,56 @@ module.exports = async options => {
     // collision-safe renaming and returns the actual name written to disk.
 
     const newFileName = await saveFile({ ext, newName: proposedName, filePath })
-    const relativeNewFilePath = path.join(path.dirname(relativeFilePath), newFileName)
     const renameResultPreview = formatRenamePreview({
       original: relativeFilePath,
-      updated: relativeNewFilePath
+      updated: path.join(path.dirname(relativeFilePath), newFileName)
     })
     console.log(`🟢 Renamed: ${renameResultPreview}`)
+    recordOutcome('renamed')
+
+    let finalAbsolutePath = path.resolve(path.dirname(filePath), newFileName)
+    let relativeNewFilePath = inputRootDirectory
+      ? path.relative(inputRootDirectory, finalAbsolutePath)
+      : path.relative(inputPath, finalAbsolutePath)
+    if (!relativeNewFilePath || relativeNewFilePath === '') {
+      relativeNewFilePath = newFileName
+    }
+
+    let subjectFolderApplied = null
+    let subjectMoveReason = null
+
+    if (subjectOrganization && subjectOrganization.enabled && subjectMovePlan) {
+      try {
+        await fs.mkdir(subjectMovePlan.targetPath, { recursive: true })
+        const destinationPath = path.join(subjectMovePlan.targetPath, newFileName)
+        await fs.rename(finalAbsolutePath, destinationPath)
+        finalAbsolutePath = destinationPath
+        relativeNewFilePath = inputRootDirectory
+          ? path.relative(inputRootDirectory, destinationPath)
+          : path.relative(inputPath, destinationPath)
+        if (!relativeNewFilePath || relativeNewFilePath === '') {
+          relativeNewFilePath = path.basename(destinationPath)
+        }
+        subjectFolderApplied = subjectMovePlan.folderName
+        subjectMoveReason = subjectMovePlan.reason
+        console.log(`📦 Moved to subject folder: ${subjectFolderApplied}/${newFileName}`)
+      } catch (moveError) {
+        console.log(`🔴 Failed to move into subject folder (${subjectMovePlan.folderName}): ${moveError.message}`)
+      }
+    }
 
     if (typeof recordLogEntry === 'function') {
 
       // The recovery log stores everything needed to undo the rename later and
       // helps future debugging by recording the reasoning the model supplied.
-      const newAbsolutePath = path.resolve(path.dirname(filePath), newFileName)
       const originalAbsolutePath = path.resolve(filePath)
       const confirmationSource = forceChange ? 'force-change flag' : 'user confirmed'
-      const revertCommand = `mv ${quoteForShell(newAbsolutePath)} ${quoteForShell(originalAbsolutePath)}`
+      const revertCommand = `mv ${quoteForShell(finalAbsolutePath)} ${quoteForShell(originalAbsolutePath)}`
       const revertCommandRelative = `mv ${quoteForShell(relativeNewFilePath)} ${quoteForShell(relativeFilePath)}`
       const logEntry = {
         originalPath: originalAbsolutePath,
 
-        newPath: newAbsolutePath,
+        newPath: finalAbsolutePath,
         originalName: path.basename(filePath),
         newName: newFileName,
         originalRelativePath: relativeFilePath,
@@ -410,13 +647,21 @@ module.exports = async options => {
         fileMetadata,
         finderTags,
         revertCommand,
-        revertCommandRelative
+        revertCommandRelative,
+        subject: subjectDetails.name,
+        subjectConfidence: subjectDetails.confidence,
+        subjectSource: subjectDetails.source,
+        subjectFolder: subjectFolderApplied,
+        subjectMoveReason
 
       }
-      recordLogEntry(logEntry)
+      if (!dryRun) {
+        recordLogEntry(logEntry)
+      }
     }
   } catch (err) {
     console.log(err.message)
+    recordOutcome('error', { reason: err.message })
   } finally {
     if (ext && isVideo({ ext }) && framesOutputDir) {
       logVerbose(verboseFlag, `🧹 Cleaning up extracted frames for ${relativeFilePath || filePath}`)

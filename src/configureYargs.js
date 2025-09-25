@@ -18,6 +18,22 @@ const normalizeBoolean = (value, fallback = undefined) => {
   return fallback
 }
 
+const normalizeStringArray = (value) => {
+  if (!value) return []
+  if (Array.isArray(value)) {
+    return value
+      .map(item => (typeof item === 'string' ? item.trim() : String(item || '')))
+      .filter(Boolean)
+  }
+  if (typeof value === 'string') {
+    return value
+      .split(',')
+      .map(segment => segment.trim())
+      .filter(Boolean)
+  }
+  return []
+}
+
 const loadConfig = async () => {
   try {
     const data = await fs.readFile(CONFIG_FILE, 'utf8')
@@ -38,7 +54,19 @@ const loadConfig = async () => {
       defaultCompanyFocus: normalizeBoolean(parsed.defaultCompanyFocus, false),
       defaultPeopleFocus: normalizeBoolean(parsed.defaultPeopleFocus, false),
       defaultProjectFocus: normalizeBoolean(parsed.defaultProjectFocus, false),
-      defaultAcceptOnEnter: normalizeBoolean(parsed.defaultAcceptOnEnter, false)
+      defaultAcceptOnEnter: normalizeBoolean(parsed.defaultAcceptOnEnter, false),
+      defaultDryRun: normalizeBoolean(parsed.defaultDryRun, false),
+      defaultSummary: normalizeBoolean(parsed.defaultSummary, false),
+      defaultOrganizeBySubject: normalizeBoolean(parsed.defaultOrganizeBySubject, false),
+      defaultMoveUnknownSubjects: normalizeBoolean(parsed.defaultMoveUnknownSubjects, false),
+      defaultMaxFileSizeMB: typeof parsed.defaultMaxFileSizeMB === 'number' && !Number.isNaN(parsed.defaultMaxFileSizeMB)
+        ? parsed.defaultMaxFileSizeMB
+        : undefined,
+      defaultOnlyExtensions: normalizeStringArray(parsed.defaultOnlyExtensions),
+      defaultIgnoreExtensions: normalizeStringArray(parsed.defaultIgnoreExtensions),
+      defaultSubjectDestination: typeof parsed.defaultSubjectDestination === 'string'
+        ? parsed.defaultSubjectDestination
+        : undefined
 
     }
   } catch (err) {
@@ -178,7 +206,50 @@ module.exports = async () => {
       type: 'boolean',
       description: 'Treat an empty confirmation response as acceptance instead of rejection',
       default: config.defaultAcceptOnEnter || false
-
+    })
+    .option('dry-run', {
+      type: 'boolean',
+      description: 'Preview suggested names without touching the filesystem',
+      default: config.defaultDryRun || false
+    })
+    .option('summary', {
+      type: 'boolean',
+      description: 'Print a run summary with rename/skip counts after completion',
+      default: config.defaultSummary || false
+    })
+    .option('organize-by-subject', {
+      type: 'boolean',
+      description: 'Move renamed files into folders grouped by their inferred subject (company, project, or person)',
+      default: config.defaultOrganizeBySubject || false
+    })
+    .option('subject-destination', {
+      type: 'string',
+      description: 'Directory where subject folders (and the run log by default) should be created',
+      default: config.defaultSubjectDestination
+    })
+    .option('move-unknown-subjects', {
+      type: 'boolean',
+      description: 'Send low-confidence subject matches into an Unknown folder instead of leaving them in place',
+      default: config.defaultMoveUnknownSubjects || false
+    })
+    .option('max-file-size', {
+      type: 'number',
+      description: 'Skip files larger than the provided size in megabytes',
+      default: config.defaultMaxFileSizeMB
+    })
+    .option('only-extensions', {
+      type: 'string',
+      description: 'Only process files whose extensions are in the comma-separated list (e.g. pdf,docx)',
+      default: config.defaultOnlyExtensions && config.defaultOnlyExtensions.length > 0
+        ? config.defaultOnlyExtensions.join(',')
+        : undefined
+    })
+    .option('ignore-extensions', {
+      type: 'string',
+      description: 'Skip files whose extensions are in the comma-separated list (e.g. jpg,png)',
+      default: config.defaultIgnoreExtensions && config.defaultIgnoreExtensions.length > 0
+        ? config.defaultIgnoreExtensions.join(',')
+        : undefined
     }).argv
 
   if (argv.help) {
@@ -357,6 +428,78 @@ module.exports = async () => {
     await saveConfig({ config })
   }
 
+  const dryRunProvided = process.argv.some((arg) => {
+    return arg === '--dry-run' || arg === '--no-dry-run' || arg.startsWith('--dry-run=') || arg.startsWith('--no-dry-run=')
+  })
+
+  if (dryRunProvided) {
+    config.defaultDryRun = argv['dry-run']
+    await saveConfig({ config })
+  }
+
+  const summaryProvided = process.argv.some((arg) => {
+    return arg === '--summary' || arg === '--no-summary' || arg.startsWith('--summary=') || arg.startsWith('--no-summary=')
+  })
+
+  if (summaryProvided) {
+    config.defaultSummary = argv.summary
+    await saveConfig({ config })
+  }
+
+  const organizeSubjectsProvided = process.argv.some((arg) => {
+    return arg === '--organize-by-subject' || arg === '--no-organize-by-subject' ||
+      arg.startsWith('--organize-by-subject=') || arg.startsWith('--no-organize-by-subject=')
+  })
+
+  if (organizeSubjectsProvided) {
+    config.defaultOrganizeBySubject = argv['organize-by-subject']
+    await saveConfig({ config })
+  }
+
+  if (argv['subject-destination'] !== undefined) {
+    if (argv['subject-destination']) {
+      config.defaultSubjectDestination = argv['subject-destination']
+    } else {
+      delete config.defaultSubjectDestination
+    }
+    await saveConfig({ config })
+  }
+
+  const moveUnknownProvided = process.argv.some((arg) => {
+    return arg === '--move-unknown-subjects' || arg === '--no-move-unknown-subjects' ||
+      arg.startsWith('--move-unknown-subjects=') || arg.startsWith('--no-move-unknown-subjects=')
+  })
+
+  if (moveUnknownProvided) {
+    config.defaultMoveUnknownSubjects = argv['move-unknown-subjects']
+    await saveConfig({ config })
+  }
+
+  if (argv['max-file-size'] !== undefined) {
+    const parsedSize = Number(argv['max-file-size'])
+    if (!Number.isNaN(parsedSize) && parsedSize > 0) {
+      config.defaultMaxFileSizeMB = parsedSize
+    } else {
+      delete config.defaultMaxFileSizeMB
+    }
+    await saveConfig({ config })
+  }
+
+  if (argv['only-extensions'] !== undefined) {
+    config.defaultOnlyExtensions = normalizeStringArray(argv['only-extensions'])
+    await saveConfig({ config })
+  }
+
+  if (argv['ignore-extensions'] !== undefined) {
+    config.defaultIgnoreExtensions = normalizeStringArray(argv['ignore-extensions'])
+    await saveConfig({ config })
+  }
+
+  config.runtimeFocusOverrides = {
+    company: companyFocusProvided ? argv['company-focus'] : undefined,
+    people: peopleFocusProvided ? argv['people-focus'] : undefined,
+    project: projectFocusProvided ? argv['project-focus'] : undefined
+  }
 
   return { argv, config }
 }

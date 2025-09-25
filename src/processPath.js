@@ -4,6 +4,11 @@ const path = require('path')
 const processFile = require('./processFile')
 const chooseModel = require('./chooseModel')
 const processDirectory = require('./processDirectory')
+const {
+  humanizeFolderName,
+  normalizeSubjectKey,
+  sanitizeSubjectFolderName
+} = require('./subjectUtils')
 
 module.exports = async ({
   inputPath,
@@ -30,9 +35,22 @@ module.exports = async ({
   defaultCompanyFocus,
   defaultPeopleFocus,
   defaultProjectFocus,
-  defaultAcceptOnEnter
+  defaultAcceptOnEnter,
+  defaultDryRun,
+  defaultSummary,
+  defaultMaxFileSizeMB,
+  defaultOnlyExtensions,
+  defaultIgnoreExtensions,
+  defaultOrganizeBySubject,
+  defaultSubjectDestination,
+  defaultMoveUnknownSubjects,
+  runtimeFocusOverrides
 
 }) => {
+  let companyFocus = false
+  let peopleFocus = false
+  let projectFocus = false
+
   try {
     const provider = defaultProvider || 'ollama'
     console.log(`⚪ Provider: ${provider}`)
@@ -101,6 +119,43 @@ module.exports = async ({
     const acceptOnEnter = interpretBoolean(defaultAcceptOnEnter, false)
     console.log(`⚪ Accept on Enter: ${acceptOnEnter}`)
 
+    const dryRun = interpretBoolean(defaultDryRun, false)
+    console.log(`⚪ Dry run mode: ${dryRun}`)
+
+    const summaryEnabled = interpretBoolean(defaultSummary, false)
+    console.log(`⚪ Summary report: ${summaryEnabled}`)
+
+    const maxFileSizeMB = typeof defaultMaxFileSizeMB === 'number' && defaultMaxFileSizeMB > 0
+      ? defaultMaxFileSizeMB
+      : null
+    console.log(`⚪ Max file size: ${maxFileSizeMB ? `${maxFileSizeMB} MB` : 'unlimited'}`)
+
+    const normalizeExtensionSet = (value) => {
+      const source = value instanceof Set
+        ? Array.from(value)
+        : Array.isArray(value)
+          ? value
+          : typeof value === 'string'
+            ? value.split(',')
+            : []
+      return new Set(source
+        .map((item) => (typeof item === 'string' ? item.trim().toLowerCase() : ''))
+        .filter(Boolean)
+        .map((item) => (item.startsWith('.') ? item : `.${item}`)))
+    }
+
+    const allowedExtensions = normalizeExtensionSet(defaultOnlyExtensions)
+    const ignoredExtensions = normalizeExtensionSet(defaultIgnoreExtensions)
+
+    console.log(`⚪ Allowed extensions filter: ${allowedExtensions.size > 0 ? Array.from(allowedExtensions).join(', ') : 'all'}`)
+    console.log(`⚪ Ignored extensions filter: ${ignoredExtensions.size > 0 ? Array.from(ignoredExtensions).join(', ') : 'none'}`)
+
+    const organizeBySubject = interpretBoolean(defaultOrganizeBySubject, false)
+    console.log(`⚪ Organize by subject folders: ${organizeBySubject}`)
+
+    const moveUnknownSubjects = interpretBoolean(defaultMoveUnknownSubjects, false)
+    console.log(`⚪ Move low-confidence subjects to Unknown: ${moveUnknownSubjects}`)
+
     const logEnabled = defaultLog !== undefined ? interpretBoolean(defaultLog, true) : true
     console.log(`⚪ Write run log: ${logEnabled}`)
 
@@ -116,30 +171,49 @@ module.exports = async ({
     const pitchDeckOnly = interpretBoolean(defaultPitchDeckOnly, false)
     console.log(`⚪ Startup pitch deck mode: ${pitchDeckOnly}`)
 
-    const companyFocus = interpretBoolean(defaultCompanyFocus, false)
-    const peopleFocus = interpretBoolean(defaultPeopleFocus, false)
-    const projectFocus = interpretBoolean(defaultProjectFocus, false)
+    const focusPriority = ['company', 'project', 'people']
+    const focusSelections = []
+    const registerFocus = ({ key, runtimeValue, defaultValue }) => {
+      const source = runtimeValue !== undefined ? 'cli' : 'config'
+      const value = runtimeValue !== undefined
+        ? interpretBoolean(runtimeValue, false)
+        : interpretBoolean(defaultValue, false)
+      if (value) {
+        focusSelections.push({ type: key, source })
+      }
+    }
 
-    const focusFlags = []
-    if (companyFocus) focusFlags.push('company')
-    if (peopleFocus) focusFlags.push('people')
-    if (projectFocus) focusFlags.push('project')
+    const overrides = runtimeFocusOverrides || {}
 
-    const focusPriority = ['project', 'company', 'people']
+    registerFocus({ key: 'company', runtimeValue: overrides.company, defaultValue: defaultCompanyFocus })
+    registerFocus({ key: 'people', runtimeValue: overrides.people, defaultValue: defaultPeopleFocus })
+    registerFocus({ key: 'project', runtimeValue: overrides.project, defaultValue: defaultProjectFocus })
+
+    const focusFlags = focusSelections.map(selection => selection.type)
+    companyFocus = focusSelections.some(selection => selection.type === 'company')
+    peopleFocus = focusSelections.some(selection => selection.type === 'people')
+    projectFocus = focusSelections.some(selection => selection.type === 'project')
+
     let promptFocus = 'balanced'
-    if (focusFlags.length === 1) {
-      promptFocus = focusFlags[0]
-    } else if (focusFlags.length > 1) {
+    if (focusSelections.length === 1) {
+      promptFocus = focusSelections[0].type
+    } else if (focusSelections.length > 1) {
+      const cliSelections = focusSelections.filter(selection => selection.source === 'cli')
+      const selectionPool = cliSelections.length > 0 ? cliSelections : focusSelections
+
       for (const candidate of focusPriority) {
-        if (focusFlags.includes(candidate)) {
-          promptFocus = candidate
+        const match = selectionPool.find(selection => selection.type === candidate)
+        if (match) {
+          promptFocus = match.type
           break
         }
       }
-      console.log(`⚪ Multiple prompt focus flags detected (${focusFlags.join(', ')}). Using ${promptFocus} focus.`)
+
+      const origin = cliSelections.length > 0 ? 'preferred CLI override' : 'configured priority'
+      console.log(`⚪ Multiple prompt focus flags detected (${focusFlags.join(', ')}). Using ${promptFocus} focus (${origin}).`)
     }
 
-    if (focusFlags.length === 0) {
+    if (focusSelections.length === 0) {
       console.log('⚪ Prompt focus: balanced')
     } else {
       console.log(`⚪ Prompt focus: ${promptFocus}`)
@@ -174,8 +248,84 @@ module.exports = async ({
     const timestamp = new Date().toISOString().replace(/[:]/g, '-')
     const defaultLogFileName = `${commandLabel}-${timestamp}.log`
 
+    const stats = await fs.stat(inputPath)
+    const maxFileSizeBytes = maxFileSizeMB ? maxFileSizeMB * 1024 * 1024 : null
+
+    const inputRootDirectory = stats.isDirectory()
+      ? path.resolve(inputPath)
+      : path.resolve(path.dirname(inputPath))
+
+    const subjectDestinationRoot = defaultSubjectDestination
+      ? path.resolve(defaultSubjectDestination)
+      : inputRootDirectory
+
+    let subjectOrganization = null
+
+    if (organizeBySubject) {
+      try {
+        await fs.mkdir(subjectDestinationRoot, { recursive: true })
+      } catch (dirErr) {
+        console.log(`⚠️ Unable to prepare subject destination (${subjectDestinationRoot}): ${dirErr.message}`)
+      }
+
+      const subjectFolderMap = new Map()
+      const subjectFolderNameSet = new Set()
+      const subjectHintSet = new Set()
+
+      try {
+        const entries = await fs.readdir(subjectDestinationRoot, { withFileTypes: true })
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue
+          const folderName = entry.name
+          const normalized = normalizeSubjectKey(folderName)
+          const absolutePath = path.join(subjectDestinationRoot, folderName)
+          if (normalized) {
+            subjectFolderMap.set(normalized, { folderName, absolutePath })
+          }
+          subjectFolderNameSet.add(folderName.toLowerCase())
+          const humanized = humanizeFolderName(folderName)
+          if (humanized) {
+            subjectHintSet.add(humanized)
+          }
+        }
+      } catch (scanErr) {
+        console.log(`⚠️ Unable to scan existing subject folders: ${scanErr.message}`)
+      }
+
+      const unknownFolderName = sanitizeSubjectFolderName('Unknown', 'Unknown')
+      const unknownKey = normalizeSubjectKey(unknownFolderName)
+      subjectFolderNameSet.add(unknownFolderName.toLowerCase())
+      if (unknownKey && !subjectFolderMap.has(unknownKey)) {
+        subjectFolderMap.set(unknownKey, {
+          folderName: unknownFolderName,
+          absolutePath: path.join(subjectDestinationRoot, unknownFolderName)
+        })
+      }
+
+      subjectOrganization = {
+        enabled: true,
+        destinationRoot: subjectDestinationRoot,
+        folderMap: subjectFolderMap,
+        folderNameSet: subjectFolderNameSet,
+        hintSet: subjectHintSet,
+        moveLowConfidence: moveUnknownSubjects,
+        unknownFolderName
+      }
+
+      console.log(`⚪ Subject destination: ${subjectDestinationRoot}`)
+      if (subjectHintSet.size > 0) {
+        const hintPreview = Array.from(subjectHintSet).slice(0, 8)
+        const suffix = subjectHintSet.size > hintPreview.length ? '…' : ''
+        console.log(`⚪ Existing subject folders detected: ${hintPreview.join(', ')}${suffix}`)
+      }
+    } else if (defaultSubjectDestination) {
+      console.log(`⚪ Subject destination (unused): ${subjectDestinationRoot}`)
+    }
+
     const resolvedLogPath = logEnabled
-      ? path.resolve(defaultLogPath || defaultLogFileName)
+      ? (defaultLogPath
+        ? path.resolve(defaultLogPath)
+        : path.join(subjectDestinationRoot, defaultLogFileName))
       : null
 
     if (logEnabled) {
@@ -185,7 +335,54 @@ module.exports = async ({
 
     console.log('--------------------------------------------------')
 
-    const stats = await fs.stat(inputPath)
+    const runStats = {
+      processed: 0,
+      renamed: 0,
+      skipped: 0,
+      dryRun: 0,
+      errors: 0
+    }
+
+    const skipReasonCounts = new Map()
+    const dryRunPreviews = []
+
+    const incrementSkipReason = (reason) => {
+      if (!reason) return
+      const current = skipReasonCounts.get(reason) || 0
+      skipReasonCounts.set(reason, current + 1)
+    }
+
+    const trackResult = ({ type, reason, preview }) => {
+      if (type === 'processed') {
+        runStats.processed += 1
+        return
+      }
+
+      if (type === 'renamed') {
+        runStats.renamed += 1
+        return
+      }
+
+      if (type === 'dry-run') {
+        runStats.dryRun += 1
+        if (preview && dryRunPreviews.length < 5) {
+          dryRunPreviews.push(preview)
+        }
+        return
+      }
+
+      if (type === 'skipped') {
+        runStats.skipped += 1
+        incrementSkipReason(reason)
+        return
+      }
+
+      if (type === 'error') {
+        runStats.errors += 1
+        incrementSkipReason(reason)
+      }
+    }
+
     const options = {
       model,
       _case,
@@ -196,6 +393,7 @@ module.exports = async ({
       language,
       provider,
       inputPath,
+      inputRootDirectory,
       includeSubdirectories,
       customPrompt,
       convertBinary,
@@ -211,7 +409,13 @@ module.exports = async ({
       acceptOnEnter,
       companyFocus,
       peopleFocus,
-      projectFocus
+      projectFocus,
+      dryRun,
+      maxFileSizeBytes,
+      allowedExtensions,
+      ignoredExtensions,
+      trackResult,
+      subjectOrganization
 
     }
 
@@ -265,7 +469,15 @@ module.exports = async ({
             promptFocus,
             companyFocus,
             peopleFocus,
-            projectFocus
+            projectFocus,
+            dryRun,
+            summary: summaryEnabled,
+            organizeBySubject,
+            subjectDestination: organizeBySubject ? subjectDestinationRoot : null,
+            moveLowConfidenceSubjects: subjectOrganization ? subjectOrganization.moveLowConfidence : moveUnknownSubjects,
+            maxFileSizeMB,
+            allowedExtensions: Array.from(allowedExtensions),
+            ignoredExtensions: Array.from(ignoredExtensions)
           },
           renames: logEntries,
           recovery: {
@@ -287,6 +499,33 @@ module.exports = async ({
         console.log(`📝 Run log saved to ${resolvedLogPath}`)
       } catch (err) {
         console.log(`🔴 Failed to write log: ${err.message}`)
+      }
+    }
+
+    if (summaryEnabled) {
+      console.log('--------------------------------------------------')
+      console.log('📊 Run summary')
+      console.log(`   Processed: ${runStats.processed}`)
+      console.log(`   Renamed: ${runStats.renamed}`)
+      console.log(`   Dry-run approvals: ${runStats.dryRun}`)
+      console.log(`   Skipped: ${runStats.skipped}`)
+      console.log(`   Errors: ${runStats.errors}`)
+
+      if (skipReasonCounts.size > 0) {
+        console.log('   Skip reasons:')
+        const sortedReasons = Array.from(skipReasonCounts.entries())
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 5)
+        for (const [reason, count] of sortedReasons) {
+          console.log(`     • ${reason}: ${count}`)
+        }
+      }
+
+      if (dryRunPreviews.length > 0) {
+        console.log('   Sample dry-run previews:')
+        for (const preview of dryRunPreviews) {
+          console.log(`     • ${preview}`)
+        }
       }
     }
   } catch (err) {
